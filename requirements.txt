@@ -6,3 +6,4 @@ beautifulsoup4>=4.12.0
 python-pptx>=0.6.23
 openpyxl>=3.1.0
 pdf2image>=1.17.0
+streamlit-mic-recorder>=0.0.8

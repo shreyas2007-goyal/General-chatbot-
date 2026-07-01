@@ -13,6 +13,8 @@ Run with:
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
+from streamlit_mic_recorder import speech_to_text
 import requests
 import json
 import io
@@ -735,6 +737,39 @@ def format_message_html(text: str) -> str:
     return safe
 
 
+def speak_text(text: str):
+    """
+    Read text aloud in the browser using the Web Speech API's SpeechSynthesis
+    interface. This runs entirely client-side, no API key or server round-trip
+    needed, and works in effectively all modern desktop/mobile browsers
+    (Chrome, Edge, Firefox, Safari) — unlike speech *recognition*, which is
+    far more browser-limited.
+
+    The text is JSON-encoded (not just quote-escaped) before being embedded in
+    the <script> tag, since JSON encoding correctly handles quotes, backslashes,
+    newlines, and other characters that could otherwise break the JS string or
+    allow injection.
+    """
+    # Strip markdown-ish symbols that would otherwise be read aloud literally
+    # (e.g. "**bold**" becoming "asterisk asterisk bold asterisk asterisk").
+    speakable = re.sub(r"[*`#_]", "", text)
+    js_safe_text = json.dumps(speakable)  # safe embedding into a JS string literal
+
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            if (!window.speechSynthesis) return;
+            const utterance = new SpeechSynthesisUtterance({js_safe_text});
+            window.speechSynthesis.cancel();  // stop any previous speech first
+            window.speechSynthesis.speak(utterance);
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def inject_theme_css():
     """
     Inject the custom dark + warm-coral theme.
@@ -918,6 +953,9 @@ if "processed_file_names" not in st.session_state:
 if "current_chat_id" not in st.session_state:
     st.session_state.current_chat_id = str(uuid.uuid4())
 
+if "voice_reply_enabled" not in st.session_state:
+    st.session_state.voice_reply_enabled = False  # text-to-speech toggle, off by default
+
 
 # =============================================================================
 # SIDEBAR — NEW CHAT / RECENT / PROVIDER / MODEL / API KEY / FILE UPLOAD
@@ -1032,6 +1070,20 @@ with st.sidebar:
             "Best-effort — DuckDuckGo may occasionally block or rate-limit it."
         )
 
+    with st.expander("🎙️  Voice", expanded=False):
+        st.session_state.voice_reply_enabled = st.toggle(
+            "🔊 Read AI replies aloud",
+            value=st.session_state.voice_reply_enabled,
+        )
+        st.caption(
+            "Uses your browser's built-in voice — works in Chrome, Edge, Firefox, and Safari."
+        )
+        st.caption(
+            "🎤 The mic button next to the chat box lets you speak instead of typing — "
+            "it auto-sends once you pause. **Note:** speech-to-text only works in "
+            "Chrome, Edge, and Safari (Firefox doesn't support it)."
+        )
+
     with st.expander("📄  Documents", expanded=bool(st.session_state.documents)):
         st.caption("Upload PDF, Word, PowerPoint, Excel, images, text, Markdown, or Python files.")
         uploaded_files = st.file_uploader(
@@ -1101,8 +1153,28 @@ for msg in st.session_state.messages:
             search_used=msg.get("search_used"),
         )
 
-# Chat input
-user_input = st.chat_input("Type your message...")
+# Chat input — text box plus an optional mic button for speech-to-text.
+# The mic auto-sends once you pause speaking (just_once=True returns the
+# transcript exactly once, then None on later reruns, which is exactly the
+# "speak once, send once" behavior wanted here).
+col_mic, col_hint = st.columns([1, 8])
+with col_mic:
+    voice_text = speech_to_text(
+        language="en",
+        start_prompt="🎤",
+        stop_prompt="⏹️",
+        just_once=True,
+        use_container_width=True,
+        key="mic_input",
+    )
+with col_hint:
+    st.caption("Click the mic to speak instead of typing (Chrome/Edge/Safari only).")
+
+typed_input = st.chat_input("Type your message...")
+
+# Whichever arrived this run — typed or spoken — becomes the message to send.
+# Both can't fire in the same rerun, so this is safe without extra coordination.
+user_input = typed_input or voice_text
 
 if user_input:
     now = datetime.now().strftime("%I:%M %p")
@@ -1208,6 +1280,9 @@ if user_input:
         provider_info=PROVIDER_STYLE[provider],
         search_used=search_used,
     )
+
+    if st.session_state.voice_reply_enabled:
+        speak_text(reply)
 
     st.session_state.messages.append({
         "role": "assistant",
